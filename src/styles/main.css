@@ -164,6 +164,51 @@ html, body {
   50% { box-shadow: 0 0 20px 10px rgba(239, 68, 68, 0.2); }
 }
 
+/* 電力表示 */
+.power-display {
+  text-align: center;
+  animation: fadeIn 0.3s ease;
+}
+
+.power-display .power-value {
+  font-size: 6rem;
+  font-weight: 700;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.power-display .power-unit {
+  font-size: 2rem;
+  opacity: 0.7;
+  margin-top: 0.5rem;
+}
+
+.power-display .power-timestamp {
+  font-size: 1rem;
+  opacity: 0.5;
+  margin-top: 1rem;
+}
+
+.power-display .power-source {
+  font-size: 0.8rem;
+  opacity: 0.4;
+  margin-top: 0.25rem;
+}
+
+.power-display.high-power .power-value {
+  color: var(--error-color);
+  animation: alertPulse 1s ease-in-out infinite;
+}
+
+@media (max-width: 480px) {
+  .power-display .power-value {
+    font-size: 4rem;
+  }
+  .power-display .power-unit {
+    font-size: 1.5rem;
+  }
+}
+
 /* ステータスバー */
 #status-bar {
   position: fixed;

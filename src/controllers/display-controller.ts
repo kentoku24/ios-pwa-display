@@ -3,44 +3,54 @@
  */
 
 import { NoSleepManager } from '../services/nosleep-manager';
-import { BrightnessDetector, type BrightnessCallback } from '../services/brightness-detector';
+import { BrightnessDetector } from '../services/brightness-detector';
 import { MessageClient, type DisplayMessage, type ConnectionState } from '../services/message-client';
+import { SSEClient, type PowerReadingEvent, type SSEConnectionState } from '../services/sse-client';
 import { SoundManager } from '../services/sound-manager';
 
 export interface DisplayConfig {
   wsUrl: string;
+  sseUrl: string;
   brightnessMode: 'auto' | 'light' | 'dark';
+  alertThresholdWatts: number;  // この値を超えたらアラート
 }
 
 export interface DisplayState {
   initialized: boolean;
-  connected: ConnectionState;
+  wsConnected: ConnectionState;
+  sseConnected: SSEConnectionState;
   brightnessMode: 'auto' | 'light' | 'dark';
   ambientLevel: number;
   cameraAvailable: boolean;
   currentMessage: DisplayMessage | null;
+  currentPower: PowerReadingEvent | null;
 }
 
 export type StateChangeHandler = (state: DisplayState) => void;
 
 const STORAGE_KEY = 'ios-pwa-display-config';
+const DEFAULT_ALERT_THRESHOLD = 2000; // 2000W
 
 export class DisplayController {
   private noSleep: NoSleepManager;
   private brightnessDetector: BrightnessDetector;
   private messageClient: MessageClient;
+  private sseClient: SSEClient;
   private soundManager: SoundManager;
 
   private stateHandlers = new Set<StateChangeHandler>();
   private messageTimeoutId: number | null = null;
+  private alertThresholdWatts: number;
 
   private _state: DisplayState = {
     initialized: false,
-    connected: 'disconnected',
+    wsConnected: 'disconnected',
+    sseConnected: 'disconnected',
     brightnessMode: 'auto',
     ambientLevel: 0.5,
     cameraAvailable: false,
     currentMessage: null,
+    currentPower: null,
   };
 
   constructor() {
@@ -54,18 +64,29 @@ export class DisplayController {
       smoothingWindow: 5,
     });
     this.messageClient = new MessageClient(savedConfig.wsUrl);
+    this.sseClient = new SSEClient(savedConfig.sseUrl);
     this.soundManager = new SoundManager();
 
     this._state.brightnessMode = savedConfig.brightnessMode;
+    this.alertThresholdWatts = savedConfig.alertThresholdWatts;
 
-    // 接続状態の変更を監視
+    // WebSocket 接続状態の変更を監視
     this.messageClient.onConnectionChange((state) => {
-      this._state.connected = state;
+      this._state.wsConnected = state;
       this.notifyStateChange();
     });
 
-    // メッセージの受信を監視
+    // WebSocket メッセージの受信を監視
     this.messageClient.onMessage((msg) => this.handleMessage(msg));
+
+    // SSE 接続状態の変更を監視
+    this.sseClient.onConnectionChange((state) => {
+      this._state.sseConnected = state;
+      this.notifyStateChange();
+    });
+
+    // SSE 電力データの受信を監視
+    this.sseClient.onPowerReading((event) => this.handlePowerReading(event));
   }
 
   get state(): DisplayState {
@@ -76,13 +97,19 @@ export class DisplayController {
     return this.messageClient.wsUrl;
   }
 
+  get sseUrl(): string {
+    return this.sseClient.sseUrl;
+  }
+
   /**
    * 設定を保存
    */
   private saveConfig(): void {
     const config: DisplayConfig = {
       wsUrl: this.messageClient.wsUrl,
+      sseUrl: this.sseClient.sseUrl,
       brightnessMode: this._state.brightnessMode,
+      alertThresholdWatts: this.alertThresholdWatts,
     };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(config));
   }
@@ -94,7 +121,13 @@ export class DisplayController {
     try {
       const saved = localStorage.getItem(STORAGE_KEY);
       if (saved) {
-        return JSON.parse(saved);
+        const config = JSON.parse(saved);
+        return {
+          wsUrl: config.wsUrl || '',
+          sseUrl: config.sseUrl || '',
+          brightnessMode: config.brightnessMode || 'auto',
+          alertThresholdWatts: config.alertThresholdWatts || DEFAULT_ALERT_THRESHOLD,
+        };
       }
     } catch (err) {
       console.warn('[DisplayController] Failed to load config:', err);
@@ -102,7 +135,9 @@ export class DisplayController {
     // デフォルト設定
     return {
       wsUrl: '',
+      sseUrl: '',
       brightnessMode: 'auto',
+      alertThresholdWatts: DEFAULT_ALERT_THRESHOLD,
     };
   }
 
@@ -113,9 +148,19 @@ export class DisplayController {
     if (config.wsUrl !== undefined) {
       this.messageClient.wsUrl = config.wsUrl;
     }
+    if (config.sseUrl !== undefined) {
+      this.sseClient.sseUrl = config.sseUrl;
+      // SSE URL が設定されたら接続開始
+      if (config.sseUrl && this._state.initialized) {
+        this.sseClient.connect();
+      }
+    }
     if (config.brightnessMode !== undefined) {
       this._state.brightnessMode = config.brightnessMode;
       this.applyBrightness(this._state.ambientLevel);
+    }
+    if (config.alertThresholdWatts !== undefined) {
+      this.alertThresholdWatts = config.alertThresholdWatts;
     }
     this.saveConfig();
     this.notifyStateChange();
@@ -146,16 +191,20 @@ export class DisplayController {
 
       if (!available) {
         console.log('[DisplayController] Camera not available, using manual mode');
-        // フォールバック: 時間帯に基づく自動切り替え
         this.applyTimeBasedBrightness();
       }
     } else {
       this.applyBrightness(this._state.brightnessMode === 'light' ? 1 : 0);
     }
 
-    // 4. WebSocket 接続を開始
+    // 4. WebSocket 接続を開始（設定されていれば）
     if (this.messageClient.wsUrl) {
       this.messageClient.connect();
+    }
+
+    // 5. SSE 接続を開始（設定されていれば）
+    if (this.sseClient.sseUrl) {
+      this.sseClient.connect();
     }
 
     this._state.initialized = true;
@@ -182,7 +231,6 @@ export class DisplayController {
         effectiveLevel = level;
     }
 
-    // CSS変数を更新
     document.documentElement.style.setProperty(
       '--ambient-brightness',
       effectiveLevel.toFixed(2)
@@ -194,13 +242,11 @@ export class DisplayController {
    */
   private applyTimeBasedBrightness(): void {
     const hour = new Date().getHours();
-    // 6時〜18時は明るめ、それ以外は暗め
     const level = (hour >= 6 && hour < 18) ? 0.7 : 0.2;
     this._state.ambientLevel = level;
     this.applyBrightness(level);
     this.notifyStateChange();
 
-    // 1時間ごとに更新
     setInterval(() => {
       if (this._state.brightnessMode === 'auto' && !this._state.cameraAvailable) {
         this.applyTimeBasedBrightness();
@@ -209,39 +255,52 @@ export class DisplayController {
   }
 
   /**
-   * メッセージを処理
+   * 電力データを処理
+   */
+  private handlePowerReading(event: PowerReadingEvent): void {
+    console.log('[DisplayController] Power reading:', event.watts, 'W');
+
+    const previousPower = this._state.currentPower;
+    this._state.currentPower = event;
+
+    // 閾値チェック: 超えた瞬間にアラート音
+    if (event.watts >= this.alertThresholdWatts) {
+      // 前回が閾値未満、または初回の場合のみ音を鳴らす
+      if (!previousPower || previousPower.watts < this.alertThresholdWatts) {
+        this.soundManager.play('alert');
+      }
+    }
+
+    this.notifyStateChange();
+  }
+
+  /**
+   * WebSocket メッセージを処理
    */
   private handleMessage(message: DisplayMessage): void {
     console.log('[DisplayController] Handling message:', message);
 
-    // 前のタイマーをクリア
     if (this.messageTimeoutId) {
       clearTimeout(this.messageTimeoutId);
       this.messageTimeoutId = null;
     }
 
-    // クリアメッセージ
     if (message.type === 'clear') {
       this._state.currentMessage = null;
       this.notifyStateChange();
       return;
     }
 
-    // 設定メッセージ
     if (message.type === 'config') {
-      // サーバーからの設定変更（将来用）
       return;
     }
 
-    // 通常メッセージ
     this._state.currentMessage = message;
 
-    // サウンド再生
     if (message.sound && message.sound !== 'none') {
       this.soundManager.play(message.sound);
     }
 
-    // 一定時間後にクリア
     if (message.duration && message.duration > 0) {
       this.messageTimeoutId = window.setTimeout(() => {
         if (this._state.currentMessage === message) {
@@ -259,7 +318,6 @@ export class DisplayController {
    */
   onStateChange(handler: StateChangeHandler): () => void {
     this.stateHandlers.add(handler);
-    // 現在の状態を即座に通知
     handler(this.state);
     return () => this.stateHandlers.delete(handler);
   }
@@ -279,6 +337,7 @@ export class DisplayController {
     this.noSleep.disable();
     this.brightnessDetector.stop();
     this.messageClient.disconnect();
+    this.sseClient.disconnect();
     if (this.messageTimeoutId) {
       clearTimeout(this.messageTimeoutId);
     }
