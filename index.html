@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="theme-color" content="#000000">
+  <title>Display</title>
+  <link rel="manifest" href="/manifest.json">
+  <link rel="apple-touch-icon" href="/icons/icon-192.png">
+  <link rel="stylesheet" href="/src/styles/main.css">
+</head>
+<body>
+  <!-- 初期化画面（タップ待ち） -->
+  <div id="init-screen" class="screen active">
+    <div class="init-content">
+      <div class="init-icon">📺</div>
+      <h1>Display App</h1>
+      <p class="init-instruction">タップして開始</p>
+      <p class="init-note">カメラと音声の許可が必要です</p>
+    </div>
+  </div>
+
+  <!-- メイン表示画面 -->
+  <div id="display-screen" class="screen">
+    <div id="message-area">
+      <div id="message-content"></div>
+    </div>
+    <div id="status-bar">
+      <span id="connection-status" class="status-dot disconnected" title="接続状態"></span>
+      <span id="brightness-indicator" title="明るさ">☀️</span>
+      <span id="brightness-value">--</span>
+    </div>
+  </div>
+
+  <!-- 設定パネル（右上タップで表示） -->
+  <div id="settings-panel" class="hidden">
+    <h3>設定</h3>
+    <div class="setting-item">
+      <label>WebSocket URL</label>
+      <input type="text" id="ws-url" placeholder="ws://localhost:8080">
+    </div>
+    <div class="setting-item">
+      <label>明るさモード</label>
+      <select id="brightness-mode">
+        <option value="auto">自動（カメラ）</option>
+        <option value="light">常に明るい</option>
+        <option value="dark">常に暗い</option>
+      </select>
+    </div>
+    <div class="setting-actions">
+      <button id="settings-save">保存</button>
+      <button id="settings-close">閉じる</button>
+    </div>
+  </div>
+
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>
