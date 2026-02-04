@@ -42,6 +42,34 @@ iOS Safari上でPWAとして動作する常時表示ディスプレイアプリ�
 
 ### 3.3 メッセージ受信
 
+#### 3.3.1 電力データ受信（remo-e SSE） — 合意済みインターフェース
+
+PWA は同一LAN上の `remo-e-poc` が提供する **Server-Sent Events (SSE)** を直接購読して、瞬時電力（W）を受信する。
+
+- Endpoint: `GET http://<mac-ip>:8787/events`
+- Content-Type: `text/event-stream`
+- Event name: `message`
+- Payload: JSON（下記スキーマ）
+
+```ts
+// event.data を JSON.parse した結果
+export interface PowerReadingEvent {
+  type: 'power.reading';
+  timestamp: string;  // ISO8601 (RFC3339)
+  watts: number;      // 瞬時電力 (W)
+  applianceId: string;
+  nickname: string;
+  sourceHost?: string;
+}
+```
+
+動作要件:
+- 接続直後に「最後の値（last event）」が即時に流れる（remo-e 側の replay）
+- フォアグラウンド専用（iOS PWAはバックグラウンドで切断される想定）
+- 再接続: `EventSource` の自動再接続に加え、`visibilitychange` で visible 時に再接続を試みる
+
+---
+
 | 方法 | iOS対応 | PWAバックグラウンド | 備考 |
 |------|---------|---------------------|------|
 | **WebSocket** | ✅ 対応 | ❌ 切断される | フォアグラウンド時は安定 |
