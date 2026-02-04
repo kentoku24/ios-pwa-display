@@ -4,6 +4,7 @@
 
 import { DisplayController, type DisplayState } from './controllers/display-controller';
 import type { DisplayMessage } from './services/message-client';
+import type { PowerReadingEvent } from './services/sse-client';
 
 // DOM要素
 const initScreen = document.getElementById('init-screen')!;
@@ -13,6 +14,7 @@ const connectionStatus = document.getElementById('connection-status')!;
 const brightnessValue = document.getElementById('brightness-value')!;
 const settingsPanel = document.getElementById('settings-panel')!;
 const wsUrlInput = document.getElementById('ws-url') as HTMLInputElement;
+const sseUrlInput = document.getElementById('sse-url') as HTMLInputElement;
 const brightnessModeSelect = document.getElementById('brightness-mode') as HTMLSelectElement;
 const settingsSaveBtn = document.getElementById('settings-save')!;
 const settingsCloseBtn = document.getElementById('settings-close')!;
@@ -46,6 +48,7 @@ initScreen.addEventListener('click', async () => {
 function showSettings(): void {
   // 現在の設定を反映
   wsUrlInput.value = controller.wsUrl;
+  sseUrlInput.value = controller.sseUrl;
   brightnessModeSelect.value = controller.state.brightnessMode;
 
   // オーバーレイ
@@ -74,14 +77,9 @@ function hideSettings(): void {
 settingsSaveBtn.addEventListener('click', () => {
   controller.updateConfig({
     wsUrl: wsUrlInput.value.trim(),
+    sseUrl: sseUrlInput.value.trim(),
     brightnessMode: brightnessModeSelect.value as 'auto' | 'light' | 'dark',
   });
-
-  // WebSocket 接続を開始
-  if (wsUrlInput.value.trim() && controller.state.initialized) {
-    // disconnect して再接続
-    controller.updateConfig({ wsUrl: wsUrlInput.value.trim() });
-  }
 
   hideSettings();
 });
@@ -123,20 +121,56 @@ displayScreen.addEventListener('contextmenu', (e) => {
  * 状態変更の反映
  */
 controller.onStateChange((state: DisplayState) => {
-  // 接続状態
-  connectionStatus.className = 'status-dot ' + state.connected;
+  // 接続状態（SSE優先、なければWS）
+  const connState = state.sseConnected !== 'disconnected' 
+    ? state.sseConnected 
+    : state.wsConnected;
+  
+  connectionStatus.className = 'status-dot ' + connState;
   connectionStatus.title = {
     connected: '接続中',
     connecting: '接続試行中...',
     disconnected: '切断',
-  }[state.connected];
+  }[connState];
 
   // 明るさ
   brightnessValue.textContent = `${Math.round(state.ambientLevel * 100)}%`;
 
-  // メッセージ
-  renderMessage(state.currentMessage);
+  // 表示優先度: currentPower > currentMessage
+  if (state.currentPower) {
+    renderPowerReading(state.currentPower);
+  } else if (state.currentMessage) {
+    renderMessage(state.currentMessage);
+  } else {
+    messageContent.innerHTML = '';
+    messageContent.className = 'empty';
+  }
 });
+
+/**
+ * 電力データを描画
+ */
+function renderPowerReading(power: PowerReadingEvent): void {
+  messageContent.className = '';
+  messageContent.style.backgroundColor = '';
+  messageContent.style.color = '';
+
+  const watts = power.watts;
+  const timestamp = new Date(power.timestamp).toLocaleTimeString('ja-JP');
+  
+  // 閾値チェックでスタイル変更（2000W以上で警告色）
+  const isHigh = watts >= 2000;
+  const colorClass = isHigh ? 'high-power' : '';
+
+  messageContent.innerHTML = `
+    <div class="power-display ${colorClass}">
+      <div class="power-value">${watts.toLocaleString()}</div>
+      <div class="power-unit">W</div>
+      <div class="power-timestamp">${timestamp}</div>
+      <div class="power-source">${escapeHtml(power.nickname || '')}</div>
+    </div>
+  `;
+}
 
 /**
  * メッセージを描画
@@ -150,7 +184,6 @@ function renderMessage(message: DisplayMessage | null): void {
 
   messageContent.className = '';
 
-  // スタイルを適用
   if (message.style?.backgroundColor) {
     messageContent.style.backgroundColor = message.style.backgroundColor;
   } else {
@@ -200,7 +233,6 @@ function escapeHtml(text: string): string {
  * PWAインストール促進（iOS Safari向け）
  */
 function checkPWAInstall(): void {
-  // スタンドアロンモードでなければ、インストールバナーを表示
   const isStandalone = window.matchMedia('(display-mode: standalone)').matches
     || (navigator as any).standalone === true;
 
@@ -213,12 +245,10 @@ function checkPWAInstall(): void {
     `;
     document.body.appendChild(banner);
 
-    // 5秒後に非表示
     setTimeout(() => {
       banner.classList.add('hidden');
     }, 8000);
 
-    // タップで非表示
     banner.addEventListener('click', () => {
       banner.classList.add('hidden');
     });
